@@ -1,0 +1,4 @@
+# Keep LF line endings so files work the same in WSL, Docker and CI
+* text=auto eol=lf
+*.pdf binary
+*.png binary

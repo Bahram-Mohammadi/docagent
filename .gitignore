@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Secrets
+.env
+
+# Data, models and indexes (downloaded by scripts, never committed)
+data/*
+!data/.gitkeep
+*.safetensors
+*.bin
+*.pt
+*.ckpt
+mlruns/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
