@@ -10,3 +10,4 @@ and the project uses [Semantic Versioning](https://semver.org/).
 - Project skeleton: folder structure, `pyproject.toml` (uv), shared settings module.
 - Tooling: ruff, mypy, pytest with coverage, pre-commit hooks, Makefile.
 - CI workflow running lint, type checks and tests on every pull request.
+- API service (FastAPI) with a `GET /health` endpoint that reports service status and version.
