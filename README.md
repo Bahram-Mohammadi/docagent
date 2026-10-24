@@ -4,7 +4,7 @@
 
 ![CI](https://github.com/Bahram-Mohammadi/docagent/actions/workflows/ci.yml/badge.svg)
 ![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)
-![Python 3.11](https://img.shields.io/badge/python-3.11-blue.svg)
+![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)
 
 > **Status:** 🚧 Phase 0: project skeleton. v0.1 (multimodal RAG baseline) in progress.
 
@@ -46,7 +46,7 @@ Ask a question such as *"Compare the revenue growth of Company A and Company B o
 
 ## Quickstart (development)
 
-Requirements: Python 3.11, [uv](https://docs.astral.sh/uv/), Git. On Windows, work inside WSL2.
+Requirements: Python 3.12, [uv](https://docs.astral.sh/uv/), Git. On Windows, work inside WSL2.
 
 ```bash
 git clone https://github.com/Bahram-Mohammadi/docagent.git
