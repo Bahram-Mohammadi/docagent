@@ -1,0 +1,38 @@
+# Git and GitHub
+.git/
+.github/
+.gitignore
+
+# Python environments and caches
+.venv/
+venv/
+**/__pycache__
+**/*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Secrets: never copy them into an image
+.env
+.env.*
+
+# Editors
+.vscode/
+.idea/
+
+# Tests run in CI, not in the runtime image
+tests/
+
+# Local data, evaluation outputs and experiment tracking
+data/
+results/
+mlruns/
+
+# Docs and development tooling are not needed at runtime
+docs/
+.pre-commit-config.yaml
+Makefile
+
+# Coverage output
+.coverage
+htmlcov/

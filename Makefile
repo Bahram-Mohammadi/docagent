@@ -1,4 +1,8 @@
-.PHONY: help setup lint format typecheck test check clean
+.PHONY: help setup lint format typecheck test check clean docker-build docker-run docker-stop
+
+NAME      := docagent-api
+IMAGE     := $(NAME):dev
+CONTAINER := $(NAME)
 
 help:  ## Show available commands
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-12s %s\n", $$1, $$2}'
@@ -26,4 +30,13 @@ check: lint typecheck test  ## Everything CI runs
 clean:  ## Remove caches
 	rm -rf .pytest_cache .mypy_cache .ruff_cache .coverage htmlcov
 
-# Docker targets (up, down, logs, ingest, ask, eval) are added in Phase 1.
+# Docker
+
+docker-build:  ## Build the API Docker image
+	docker build -f services/api/Dockerfile -t $(IMAGE) .
+
+docker-run:  ## Run the API Docker container
+	docker run --rm -d -p 127.0.0.1:8000:8000 --name $(CONTAINER) $(IMAGE)
+
+docker-stop:  ## Stop the API Docker container
+	docker stop $(CONTAINER) || true
