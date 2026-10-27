@@ -6,7 +6,7 @@
 ![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)
 ![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)
 
-> **Status:** 🚧 Phase 0: project skeleton. v0.1 (multimodal RAG baseline) in progress.
+> **Status:** 🚧 v0.1 (multimodal RAG baseline) in progress. Done so far: project tooling and CI, the API service with a health endpoint, and its Docker image.
 
 <!-- Add a 15-second demo GIF here once the UI exists. -->
 
@@ -56,7 +56,36 @@ make setup   # install dependencies + pre-commit hooks
 make check   # lint, type check, tests
 ```
 
-Docker Compose instructions arrive with v0.1.
+## Run with Docker
+
+Requirements: [Docker](https://docs.docker.com/get-docker/). On Windows, use Docker Desktop with WSL integration enabled for your distribution.
+
+**1. Build the image and start the API:**
+
+```bash
+make docker-build
+make docker-run
+```
+
+**2. Check that it works.** After 10–30 seconds, `docker ps` shows the container as `(healthy)`. Then open:
+
+- <http://localhost:8000/health>: returns `{"status": "ok", "version": "..."}`
+- <http://localhost:8000/docs>: interactive API documentation
+
+The port is bound to `127.0.0.1`, so the API is only reachable from your own machine.
+
+**3. Stop it:**
+
+```bash
+make docker-stop
+```
+
+Without `make`, use the underlying commands:
+
+```bash
+docker build -f services/api/Dockerfile -t docagent-api:dev .
+docker run --rm -d -p 127.0.0.1:8000:8000 --name docagent-api docagent-api:dev
+```
 
 ## Project structure
 
@@ -73,6 +102,7 @@ docs/           architecture, design decisions, evaluation report
 ## Development workflow
 
 - `main` is protected; every change goes through a pull request with green CI.
+- Pull requests are squash-merged, so each commit on `main` is one reviewed change.
 - Branch names: `feat/...`, `fix/...`, `docs/...`, `chore/...`.
 - Commits follow [Conventional Commits](https://www.conventionalcommits.org/).
 - Design decisions are recorded in [docs/decisions.md](docs/decisions.md).

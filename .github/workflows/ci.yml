@@ -34,3 +34,10 @@ jobs:
 
       - name: Test
         run: uv run pytest --cov --cov-report=term-missing -m "not gpu"
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build API image
+        run: docker build -f services/api/Dockerfile -t docagent-api:dev .
