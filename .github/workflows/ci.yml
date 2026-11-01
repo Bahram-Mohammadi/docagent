@@ -7,11 +7,12 @@ on:
 
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   check:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
@@ -21,23 +22,26 @@ jobs:
 
       - name: Install Python and dependencies
         run: |
-          uv python install 3.12
-          uv sync
+          uv python install
+          uv sync --locked
 
       - name: Lint
-        run: |
-          uv run ruff check .
-          uv run ruff format --check .
+        run: make lint
 
       - name: Type check
-        run: uv run mypy
+        run: make typecheck
 
       - name: Test
-        run: uv run pytest --cov --cov-report=term-missing -m "not gpu"
+        run: make test
 
   docker:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+
       - name: Build API image
         run: docker build -f services/api/Dockerfile -t docagent-api:dev .
+
+      - name: Smoke test (Compose)
+        run: make smoke
