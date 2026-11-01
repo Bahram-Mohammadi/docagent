@@ -1,0 +1,44 @@
+name: docagent
+
+services:
+  qdrant:
+    image: qdrant/qdrant:v1.20.0
+    ports:
+      # Localhost only: Qdrant has no authentication by default.
+      - "127.0.0.1:6333:6333"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    healthcheck:
+      # The image has no curl/wget/python, so bash's /dev/tcp sends a raw HTTP
+      # request; healthy only if /readyz answers 200.
+      test:
+        - CMD
+        - bash
+        - -c
+        - 'exec 3<>/dev/tcp/127.0.0.1/6333 && printf "GET /readyz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n" >&3 && head -n 1 <&3 | grep -q " 200 "'
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+      # Check every 2 s during start-up, so the API does not wait a full interval.
+      start_interval: 2s
+
+  api:
+    build:
+      context: .
+      dockerfile: services/api/Dockerfile
+    # Same tag as `make docker-build`, so both produce one image.
+    image: docagent-api:dev
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      # Documents the wiring: services reach each other by service name.
+      QDRANT_URL: http://qdrant:6333
+    depends_on:
+      qdrant:
+        # Start the API only after Qdrant's health check passes, not merely
+        # after its container starts.
+        condition: service_healthy
+
+volumes:
+  qdrant_data:
