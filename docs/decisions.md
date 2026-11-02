@@ -106,3 +106,22 @@ Template:
   - Harder: it is slower (around 30 s including the build), and a failure shows that something broke, not exactly what. The unit tests and printed logs narrow it down.
   - Harder: it uses the same ports as the development stack, so the development stack must be stopped first (`make down`). The script is written in Bash, not Python.
   - Revisit when the retriever starts writing to and querying Qdrant: query behaviour needs container-backed integration tests (option 2), because fakes cannot reproduce it faithfully.
+
+## ADR-008: pypdfium2 for rendering PDF pages, in `docagent_core/ingestion/`
+- Date: 2026-11-02
+- Context: both retrieval pipelines start from page images (ColQwen2 embeds whole pages), and the vision-language model reads charts and tables from images, so every uploaded PDF must be rendered to one image per page. The project is MIT-licensed and offered as a network service, so dependency licences matter. Installs must be reproducible across local development, CI and Docker images (ADR-001, ADR-004). The code also needs a home: ADR-003 keeps one root package, and only `docagent_core` is built and installed.
+- Options:
+  1. PyMuPDF (MuPDF engine): fast, with a rich API and good text extraction, installed as a pip wheel. Licensed under AGPL-3.0, whose network clause requires the complete source of any program built on it to be offered under AGPL to its network users. That would override the project's MIT terms for anyone deploying it, and many companies do not allow AGPL dependencies. A commercial licence exists, but is not an option for an open project.
+  2. pdf2image with Poppler: an MIT-licensed wrapper that runs Poppler's `pdftoppm` program for each conversion. Poppler is a system package, so it must be installed with `apt` in the Dockerfile, in CI and on every developer machine, and its version cannot be pinned in `uv.lock`. Each conversion starts a separate process and passes data through temporary files.
+  3. pypdfium2 (PDFium, the PDF engine in Chrome): Apache-2.0/BSD licensed, distributed as pip wheels that contain the compiled engine, and runs inside the Python process. Docling, planned for layout and table parsing, also uses pypdfium2.
+- Decision: pypdfium2, with Pillow to save the rendered pages as PNG. Both are runtime dependencies. The code lives in a `docagent_core/ingestion/` subpackage rather than a top-level `ingestion/` folder.
+- Consequences:
+  - Easier: no licence conflict, so the project stays freely usable and deployable under MIT.
+  - Easier: one `uv add`, with the exact version pinned in `uv.lock`, so rendering is identical on laptops, in CI and in images. No `apt` packages, Dockerfile changes or extra CI steps.
+  - Easier: one PDF engine across the pipeline. The pages we render come from the same engine Docling uses for parsing, so page geometry matches when evidence boxes are drawn later.
+  - Easier: as a `docagent_core` subpackage, the code is already covered by the wheel build, mypy, coverage and the Dockerfile's `COPY docagent_core/`, so no configuration changes are needed. The API (`POST /ingest`) and later services can import it.
+  - Harder: the API is lower-level than PyMuPDF. Documents and pages must be opened and closed explicitly, so the rendering code must release them reliably (for example with `try`/`finally`).
+  - Harder: PDFium is not thread-safe, so pages must not be rendered from several threads in one process at once. Rendering runs sequentially; if it becomes a bottleneck, use separate processes, not threads.
+  - Harder: text extraction is basic compared with PyMuPDF. This is acceptable because Docling handles text, layout and tables.
+  - The README's project structure must show ingestion inside `docagent_core/`, not as a top-level folder.
+  - Revisit if rendering quality or speed proves inadequate on the evaluation documents, or when ADR-003's workspace split happens with the retriever, at which point ingestion may become its own package.
