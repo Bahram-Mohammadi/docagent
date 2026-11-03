@@ -8,8 +8,10 @@ requires-python = ">=3.12,<3.13"
 dependencies = [
     "fastapi>=0.159.1",
     "httpx>=0.28.1",
+    "pillow>=13.0.0",
     "pydantic>=2.7",
     "pydantic-settings>=2.3",
+    "pypdfium2>=5.14.0",
     "uvicorn[standard]>=0.54.0",
 ]
 
@@ -43,6 +45,10 @@ python_version = "3.12"
 strict = true
 plugins = ["pydantic.mypy"]
 packages = ["docagent_core", "docagent_api"]
+
+[[tool.mypy.overrides]]
+module = ["pypdfium2", "pypdfium2.*"]
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 pythonpath = ["services/api"]
