@@ -19,6 +19,10 @@ and the project uses [Semantic Versioning](https://semver.org/).
 - End-to-end smoke test (`scripts/smoke.sh`, `make smoke`) that starts the real stack in a separate Compose project, stops and restarts Qdrant, checks that `/ready` and `/health` respond correctly, and prints container logs if a check fails.
 - CI runs the smoke test on every pull request as part of the `docker` job.
 - `gpu` pytest marker for tests that need a CUDA GPU; these tests are excluded from `make test` and CI. Unknown markers are now an error (`--strict-markers`).
+- `gpu` pytest marker for tests that need a CUDA GPU; these tests are excluded from `make test` and CI. Unknown markers are now an error (`--strict-markers`).
+- PDF page rendering (`docagent_core.ingestion.render`): `render_pdf` renders every page of a PDF to PNG at a configurable DPI (default 144) under `<output_dir>/<doc_id>/`, where the document ID is the SHA-256 hash of the file's content. Uses `pypdfium2` and `pillow`, both new runtime dependencies.
+- Safety limits for rendering untrusted PDFs: files with more than 500 pages (configurable) or with a page that would exceed 50 million pixels are rejected with `InvalidPDFError` before anything is rendered, as are files that cannot be opened as PDFs.
+- Rendering writes pages to a temporary folder and moves them into place only when every page succeeds, so a failure leaves nothing behind. A `manifest.json` records the result; rendering the same file again at the same DPI returns the saved result without re-rendering.
 
 ### Changed
 - Python 3.12 is now required (previously 3.11–3.12); local development, CI and the Docker image all use 3.12.

@@ -6,7 +6,7 @@
 ![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)
 ![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)
 
-> **Status:** 🚧 v0.1 (multimodal RAG baseline) in progress. Done so far: project tooling and CI, the API service with health and readiness endpoints, its Docker image, and a Docker Compose stack with Qdrant that is smoke-tested in CI.
+> **Status:** 🚧 v0.1 (multimodal RAG baseline) in progress. Done so far: project tooling and CI, the API service with health and readiness endpoints, its Docker image, a Docker Compose stack with Qdrant that is smoke-tested in CI, and PDF page rendering with safety limits and caching.
 
 <!-- Add a 15-second demo GIF here once the UI exists. -->
 
@@ -119,24 +119,24 @@ In this mode `/health` returns `200`, but `/ready` returns `503`, because there 
 
 | Layer | Command | What it covers | Needs |
 | --- | --- | --- | --- |
-| Unit | `make test` | Routes, readiness logic and settings, with external services replaced by fakes | Python only |
+| Unit | `make test` | Routes, readiness logic, settings and PDF page rendering, with external services replaced by fakes | Python only |
 | Smoke | `make smoke` | The real stack: builds the image, starts Qdrant and the API, stops and restarts Qdrant, and checks that `/ready` follows it | Docker |
 
-`make check` runs linting, type checking and the unit tests. The smoke test uses its own Compose project (`docagent-smoke`) and deletes everything it created when it finishes, so your development data is never touched. Stop your development stack first (`make down`), because both use the same ports.
+`make check` runs linting, type checking and the unit tests. The rendering tests generate their PDFs during the test run, so no binary test files are stored in the repository. The smoke test uses its own Compose project (`docagent-smoke`) and deletes everything it created when it finishes, so your development data is never touched. Stop your development stack first (`make down`), because both use the same ports.
 
 CI runs both layers on every pull request: the `check` job runs `make lint`, `make typecheck` and `make test`, and the `docker` job builds the image and runs `make smoke`. Tests marked `gpu` are excluded from both.
 
 ## Project structure
 
 ```text
-services/       one folder per container (api, retriever, mcp_tools, sandbox, ui)
-docagent_core/  shared library: settings, schemas, clients
-ingestion/      parsing, chunking, page rendering
-training/       LoRA fine-tuning of the chart reader
-eval/           benchmarks, metrics, ablations
-scripts/        developer and CI scripts (smoke test)
-tests/          unit and integration tests
-docs/           architecture, design decisions, evaluation report
+services/                 one folder per container (api, retriever, mcp_tools, sandbox, ui)
+docagent_core/            shared library: settings, schemas, clients
+docagent_core/ingestion/  PDF page rendering; parsing and chunking will follow
+training/                 LoRA fine-tuning of the chart reader
+eval/                     benchmarks, metrics, ablations
+scripts/                  developer and CI scripts (smoke test)
+tests/                    unit and integration tests
+docs/                     architecture, design decisions, evaluation report
 ```
 
 ## Development workflow
