@@ -1,6 +1,8 @@
 """Render PDF pages to PNG images."""
 
 import hashlib
+import shutil
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -94,6 +96,10 @@ def render_pdf(
 ) -> RenderedDocument:
     """Render every page of a PDF to PNG under output_dir/<doc_id>/.
 
+    Pages are written to a temporary folder inside output_dir and moved into place
+    only after every page succeeds, so output_dir/<doc_id>/ is either complete or
+    absent. Rendering the same PDF again replaces the previous output.
+
     Page paths in the result are relative to output_dir, so the result stays valid
     if the output directory is moved or mounted somewhere else.
 
@@ -111,32 +117,44 @@ def render_pdf(
     except pdfium.PdfiumError as exc:
         raise InvalidPDFError(f"Cannot open {pdf_path.name} as a PDF") from exc
 
-    pages: list[RenderedPage] = []
     try:
         page_count = len(pdf)
         if page_count > max_pages:
             raise InvalidPDFError(
                 f"{pdf_path.name} has {page_count} pages; the limit is {max_pages}"
             )
-        doc_dir.mkdir(parents=True, exist_ok=True)
 
-        for index in range(page_count):
-            page_number = index + 1
-            page = pdf[index]
-            try:
-                pages.append(
-                    _render_page(
-                        page,
-                        page_number=page_number,
-                        scale=scale,
-                        dpi=dpi,
-                        write_dir=doc_dir,
-                        doc_id=doc_id,
-                        pdf_name=pdf_path.name,
+        # Same filesystem as doc_dir, so the final rename is atomic.
+        output_dir.mkdir(parents=True, exist_ok=True)
+        tmp_dir = output_dir / f".tmp-{doc_id}-{uuid.uuid4().hex}"
+        tmp_dir.mkdir()
+
+        pages: list[RenderedPage] = []
+        try:
+            for index in range(page_count):
+                page = pdf[index]
+                try:
+                    pages.append(
+                        _render_page(
+                            page,
+                            page_number=index + 1,
+                            scale=scale,
+                            dpi=dpi,
+                            write_dir=tmp_dir,
+                            doc_id=doc_id,
+                            pdf_name=pdf_path.name,
+                        )
                     )
-                )
-            finally:
-                page.close()
+                finally:
+                    page.close()
+
+            if doc_dir.exists():
+                shutil.rmtree(doc_dir)
+            tmp_dir.rename(doc_dir)
+        except BaseException:
+            # Leave nothing behind, then let the original error propagate unchanged.
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            raise
     finally:
         pdf.close()
 
