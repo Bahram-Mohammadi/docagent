@@ -2,6 +2,7 @@
 
 import hashlib
 from pathlib import Path
+from typing import Any
 
 import pypdfium2 as pdfium
 from pydantic import BaseModel, ConfigDict
@@ -47,6 +48,44 @@ def compute_doc_id(pdf_path: Path) -> str:
         return hashlib.file_digest(f, "sha256").hexdigest()
 
 
+def _render_page(
+    page: Any,
+    *,
+    page_number: int,
+    scale: float,
+    dpi: int,
+    write_dir: Path,
+    doc_id: str,
+    pdf_name: str,
+) -> RenderedPage:
+    """Check one page's size, render it as PNG into write_dir, and describe it.
+
+    The caller owns `page` and must close it; this function closes only the bitmap it creates.
+    """
+    width_pt, height_pt = page.get_size()
+    width_px = round(width_pt * scale)
+    height_px = round(height_pt * scale)
+    if width_px * height_px > MAX_PIXELS_PER_PAGE:
+        raise InvalidPDFError(
+            f"{pdf_name} page {page_number} is too large ({width_px}x{height_px} px at {dpi} DPI)"
+        )
+
+    filename = f"page-{page_number:04d}.png"
+    bitmap = page.render(scale=scale)
+    try:
+        image = bitmap.to_pil()
+        image.save(write_dir / filename, "PNG")
+    finally:
+        bitmap.close()
+
+    return RenderedPage(
+        page_number=page_number,
+        path=Path(doc_id) / filename,
+        width=image.width,
+        height=image.height,
+    )
+
+
 def render_pdf(
     pdf_path: Path,
     output_dir: Path,
@@ -85,29 +124,15 @@ def render_pdf(
             page_number = index + 1
             page = pdf[index]
             try:
-                width_pt, height_pt = page.get_size()
-                width_px = round(width_pt * scale)
-                height_px = round(height_pt * scale)
-                if width_px * height_px > MAX_PIXELS_PER_PAGE:
-                    raise InvalidPDFError(
-                        f"{pdf_path.name} page {page_number} is too large "
-                        f"({width_px}x{height_px} px at {dpi} DPI)"
-                    )
-
-                filename = f"page-{page_number:04d}.png"
-                bitmap = page.render(scale=scale)
-                try:
-                    image = bitmap.to_pil()
-                    image.save(doc_dir / filename, "PNG")
-                finally:
-                    bitmap.close()
-
                 pages.append(
-                    RenderedPage(
+                    _render_page(
+                        page,
                         page_number=page_number,
-                        path=Path(doc_id) / filename,
-                        width=image.width,
-                        height=image.height,
+                        scale=scale,
+                        dpi=dpi,
+                        write_dir=doc_dir,
+                        doc_id=doc_id,
+                        pdf_name=pdf_path.name,
                     )
                 )
             finally:
