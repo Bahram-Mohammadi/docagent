@@ -75,6 +75,24 @@ def test_render_pdf_renders_every_page(tmp_path: Path, output_dir: Path) -> None
     assert all((output_dir / page.path).is_file() for page in result.pages)
 
 
+def test_render_pdf_rendering_the_same_pdf_twice_succeeds(tmp_path: Path, output_dir: Path) -> None:
+    pdf_path = make_pdf(tmp_path / "doc.pdf", page_count=2)
+
+    first = render_pdf(pdf_path, output_dir)
+    second = render_pdf(pdf_path, output_dir)
+
+    assert second == first
+    assert all((output_dir / page.path).is_file() for page in second.pages)
+
+
+def test_render_pdf_leaves_no_temporary_folder(tmp_path: Path, output_dir: Path) -> None:
+    pdf_path = make_pdf(tmp_path / "doc.pdf")
+
+    render_pdf(pdf_path, output_dir)
+
+    assert list(output_dir.glob(".tmp-*")) == []
+
+
 @pytest.mark.parametrize(
     ("dpi", "expected_size"),
     [
@@ -122,7 +140,8 @@ def test_render_pdf_rejects_oversized_page(tmp_path: Path, output_dir: Path) -> 
     with pytest.raises(InvalidPDFError, match="too large"):
         render_pdf(pdf_path, output_dir)
 
-    assert list(output_dir.rglob("*.png")) == []
+    assert not (output_dir / compute_doc_id(pdf_path)).exists()
+    assert list(output_dir.glob(".tmp-*")) == []
 
 
 @pytest.mark.parametrize(
