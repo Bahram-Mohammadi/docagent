@@ -7,12 +7,13 @@ from pathlib import Path
 from typing import Any
 
 import pypdfium2 as pdfium
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 DEFAULT_DPI = 144
 POINTS_PER_INCH = 72
 DEFAULT_MAX_PAGES = 500
 MAX_PIXELS_PER_PAGE = 50_000_000
+MANIFEST_NAME = "manifest.json"
 
 
 class InvalidPDFError(ValueError):
@@ -48,6 +49,14 @@ def compute_doc_id(pdf_path: Path) -> str:
     """
     with pdf_path.open("rb") as f:
         return hashlib.file_digest(f, "sha256").hexdigest()
+
+
+def _load_manifest(path: Path) -> RenderedDocument | None:
+    """Return the saved result at path, or None if it is missing or unreadable."""
+    try:
+        return RenderedDocument.model_validate_json(path.read_bytes())
+    except (OSError, ValidationError):
+        return None
 
 
 def _render_page(
@@ -96,9 +105,12 @@ def render_pdf(
 ) -> RenderedDocument:
     """Render every page of a PDF to PNG under output_dir/<doc_id>/.
 
-    Pages are written to a temporary folder inside output_dir and moved into place
-    only after every page succeeds, so output_dir/<doc_id>/ is either complete or
-    absent. Rendering the same PDF again replaces the previous output.
+    If output_dir/<doc_id>/ already holds a valid manifest at the same DPI, that
+    saved result is returned without opening the PDF.
+
+    Otherwise, pages are written to a temporary folder inside output_dir and moved
+    into place only after every page succeeds, so output_dir/<doc_id>/ is either
+    complete or absent. An earlier render at a different DPI is replaced.
 
     Page paths in the result are relative to output_dir, so the result stays valid
     if the output directory is moved or mounted somewhere else.
@@ -110,6 +122,11 @@ def render_pdf(
     """
     doc_id = compute_doc_id(pdf_path)
     doc_dir = output_dir / doc_id
+
+    saved = _load_manifest(doc_dir / MANIFEST_NAME)
+    if saved is not None and saved.doc_id == doc_id and saved.dpi == dpi:
+        return saved
+
     scale = dpi / POINTS_PER_INCH
 
     try:
@@ -148,6 +165,13 @@ def render_pdf(
                 finally:
                     page.close()
 
+            # The manifest is written last: its presence marks the folder as complete.
+            document = RenderedDocument(doc_id=doc_id, dpi=dpi, pages=pages)
+            (tmp_dir / MANIFEST_NAME).write_text(
+                document.model_dump_json(indent=2), encoding="utf-8"
+            )
+
+            # Replace an earlier render only once the new one is fully written.
             if doc_dir.exists():
                 shutil.rmtree(doc_dir)
             tmp_dir.rename(doc_dir)
@@ -158,4 +182,4 @@ def render_pdf(
     finally:
         pdf.close()
 
-    return RenderedDocument(doc_id=doc_id, dpi=dpi, pages=pages)
+    return document

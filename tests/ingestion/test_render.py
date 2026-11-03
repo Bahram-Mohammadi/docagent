@@ -7,7 +7,14 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
-from docagent_core.ingestion.render import InvalidPDFError, compute_doc_id, render_pdf
+from docagent_core.ingestion import render as render_module
+from docagent_core.ingestion.render import (
+    MANIFEST_NAME,
+    InvalidPDFError,
+    RenderedDocument,
+    compute_doc_id,
+    render_pdf,
+)
 
 
 def make_pdf(
@@ -20,6 +27,12 @@ def make_pdf(
     images = [Image.new("RGB", size, "white") for _ in range(page_count)]
     images[0].save(path, "PDF", save_all=True, append_images=images[1:], resolution=resolution)
     return path
+
+
+def load_manifest(output_dir: Path, doc_id: str) -> RenderedDocument:
+    """Read the saved manifest for doc_id, failing the test if it is missing or invalid."""
+    manifest_path = output_dir / doc_id / MANIFEST_NAME
+    return RenderedDocument.model_validate_json(manifest_path.read_bytes())
 
 
 @pytest.fixture
@@ -75,16 +88,6 @@ def test_render_pdf_renders_every_page(tmp_path: Path, output_dir: Path) -> None
     assert all((output_dir / page.path).is_file() for page in result.pages)
 
 
-def test_render_pdf_rendering_the_same_pdf_twice_succeeds(tmp_path: Path, output_dir: Path) -> None:
-    pdf_path = make_pdf(tmp_path / "doc.pdf", page_count=2)
-
-    first = render_pdf(pdf_path, output_dir)
-    second = render_pdf(pdf_path, output_dir)
-
-    assert second == first
-    assert all((output_dir / page.path).is_file() for page in second.pages)
-
-
 def test_render_pdf_leaves_no_temporary_folder(tmp_path: Path, output_dir: Path) -> None:
     pdf_path = make_pdf(tmp_path / "doc.pdf")
 
@@ -111,6 +114,73 @@ def test_render_pdf_image_size_follows_dpi(
     assert (page.width, page.height) == expected_size
     with Image.open(output_dir / page.path) as image:
         assert image.size == expected_size
+
+
+# --- render_pdf: saved results (manifest) --------------------------------------
+
+
+def test_render_pdf_writes_manifest_matching_result(tmp_path: Path, output_dir: Path) -> None:
+    pdf_path = make_pdf(tmp_path / "doc.pdf", page_count=2)
+
+    result = render_pdf(pdf_path, output_dir)
+
+    assert load_manifest(output_dir, result.doc_id) == result
+
+
+def test_render_pdf_returns_saved_result_without_reopening(
+    tmp_path: Path, output_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pdf_path = make_pdf(tmp_path / "doc.pdf", page_count=2)
+    first = render_pdf(pdf_path, output_dir)
+
+    def fail_if_opened(*args: object, **kwargs: object) -> None:
+        raise AssertionError("render_pdf opened the PDF instead of using the saved manifest")
+
+    monkeypatch.setattr(render_module.pdfium, "PdfDocument", fail_if_opened)
+
+    second = render_pdf(pdf_path, output_dir)
+
+    assert second == first
+    assert all((output_dir / page.path).is_file() for page in second.pages)
+
+
+def test_render_pdf_rerenders_when_dpi_changes(tmp_path: Path, output_dir: Path) -> None:
+    pdf_path = make_pdf(tmp_path / "doc.pdf")  # one 100 x 200 pt page
+    render_pdf(pdf_path, output_dir, dpi=72)
+
+    result = render_pdf(pdf_path, output_dir, dpi=144)
+
+    assert result.dpi == 144
+    assert (result.pages[0].width, result.pages[0].height) == (200, 400)
+    assert load_manifest(output_dir, result.doc_id) == result
+    with Image.open(output_dir / result.pages[0].path) as image:
+        assert image.size == (200, 400)
+    assert list(output_dir.glob(".tmp-*")) == []
+
+
+def test_render_pdf_rerenders_when_manifest_is_damaged(tmp_path: Path, output_dir: Path) -> None:
+    pdf_path = make_pdf(tmp_path / "doc.pdf", page_count=2)
+    first = render_pdf(pdf_path, output_dir)
+    manifest_path = output_dir / first.doc_id / MANIFEST_NAME
+    manifest_path.write_text("{ not valid json", encoding="utf-8")
+
+    second = render_pdf(pdf_path, output_dir)
+
+    assert second == first
+    assert load_manifest(output_dir, second.doc_id) == second
+
+
+def test_render_pdf_ignores_manifest_for_another_document(tmp_path: Path, output_dir: Path) -> None:
+    pdf_path = make_pdf(tmp_path / "doc.pdf")
+    first = render_pdf(pdf_path, output_dir)
+    manifest_path = output_dir / first.doc_id / MANIFEST_NAME
+    wrong = first.model_copy(update={"doc_id": "0" * 64})
+    manifest_path.write_text(wrong.model_dump_json(), encoding="utf-8")
+
+    second = render_pdf(pdf_path, output_dir)
+
+    assert second == first
+    assert load_manifest(output_dir, second.doc_id) == second
 
 
 # --- render_pdf: limits and invalid input --------------------------------------
