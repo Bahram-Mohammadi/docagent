@@ -86,14 +86,15 @@ def _render_page(
     try:
         image = bitmap.to_pil()
         image.save(write_dir / filename, "PNG")
+        width, height = image.size
     finally:
         bitmap.close()
 
     return RenderedPage(
         page_number=page_number,
         path=Path(doc_id) / filename,
-        width=image.width,
-        height=image.height,
+        width=width,
+        height=height,
     )
 
 
@@ -105,26 +106,40 @@ def render_pdf(
 ) -> RenderedDocument:
     """Render every page of a PDF to PNG under output_dir/<doc_id>/.
 
-    If output_dir/<doc_id>/ already holds a valid manifest at the same DPI, that
-    saved result is returned without opening the PDF.
+    If output_dir/<doc_id>/ already holds a valid manifest at the same DPI and
+    every page image it lists exists,, that saved result is returned without
+    opening the PDF.
 
     Otherwise, pages are written to a temporary folder inside output_dir and moved
     into place only after every page succeeds, so output_dir/<doc_id>/ is either
-    complete or absent. An earlier render at a different DPI is replaced.
+    complete or absent. An earlier render (a different DPI, or one with missing images)
+    is replaced, and the old one is kept until the new one is in place.
 
     Page paths in the result are relative to output_dir, so the result stays valid
     if the output directory is moved or mounted somewhere else.
 
     Raises:
+        ValueError: dpi or max_pages is not positive.
         InvalidPDFError: the file cannot be opened as a PDF, has more than
             max_pages pages, or has a page larger than MAX_PIXELS_PER_PAGE
             when rendered at this DPI.
     """
+    if dpi <= 0:
+        raise ValueError(f"dpi must be positive, got {dpi}")
+    if max_pages <= 0:
+        raise ValueError(f"max_pages must be positive, got {max_pages}")
+
     doc_id = compute_doc_id(pdf_path)
     doc_dir = output_dir / doc_id
 
     saved = _load_manifest(doc_dir / MANIFEST_NAME)
-    if saved is not None and saved.doc_id == doc_id and saved.dpi == dpi:
+
+    if (
+        saved is not None
+        and saved.doc_id == doc_id
+        and saved.dpi == dpi
+        and all((output_dir / page.path).is_file() for page in saved.pages)
+    ):
         return saved
 
     scale = dpi / POINTS_PER_INCH
@@ -172,9 +187,19 @@ def render_pdf(
             )
 
             # Replace an earlier render only once the new one is fully written.
+            backup_dir: Path | None = None
             if doc_dir.exists():
-                shutil.rmtree(doc_dir)
-            tmp_dir.rename(doc_dir)
+                backup_dir = output_dir / f".old-{doc_id}-{uuid.uuid4().hex}"
+                doc_dir.rename(backup_dir)
+            try:
+                tmp_dir.rename(doc_dir)
+            except BaseException:
+                if backup_dir is not None:
+                    backup_dir.rename(doc_dir)  # put the old render back
+                raise
+            if backup_dir is not None:
+                shutil.rmtree(backup_dir, ignore_errors=True)
+
         except BaseException:
             # Leave nothing behind, then let the original error propagate unchanged.
             shutil.rmtree(tmp_dir, ignore_errors=True)

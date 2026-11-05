@@ -156,6 +156,7 @@ def test_render_pdf_rerenders_when_dpi_changes(tmp_path: Path, output_dir: Path)
     with Image.open(output_dir / result.pages[0].path) as image:
         assert image.size == (200, 400)
     assert list(output_dir.glob(".tmp-*")) == []
+    assert list(output_dir.glob(".old-*")) == []
 
 
 def test_render_pdf_rerenders_when_manifest_is_damaged(tmp_path: Path, output_dir: Path) -> None:
@@ -168,6 +169,45 @@ def test_render_pdf_rerenders_when_manifest_is_damaged(tmp_path: Path, output_di
 
     assert second == first
     assert load_manifest(output_dir, second.doc_id) == second
+
+
+def test_render_pdf_rerenders_when_a_page_image_is_missing(
+    tmp_path: Path, output_dir: Path
+) -> None:
+    pdf_path = make_pdf(tmp_path / "doc.pdf", page_count=2)
+    first = render_pdf(pdf_path, output_dir)
+    missing = output_dir / first.pages[1].path
+    missing.unlink()
+
+    second = render_pdf(pdf_path, output_dir)
+
+    assert second == first
+    assert missing.is_file()
+    assert list(output_dir.glob(".old-*")) == []
+
+
+def test_render_pdf_keeps_old_render_when_replacement_fails(
+    tmp_path: Path, output_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pdf_path = make_pdf(tmp_path / "doc.pdf")
+    first = render_pdf(pdf_path, output_dir, dpi=72)
+
+    real_rename = Path.rename
+
+    def failing_rename(self: Path, target: Path) -> Path:
+        if self.name.startswith(".tmp-"):
+            raise OSError("simulated failure")
+        return real_rename(self, target)
+
+    monkeypatch.setattr(Path, "rename", failing_rename)
+
+    with pytest.raises(OSError, match="simulated failure"):
+        render_pdf(pdf_path, output_dir, dpi=144)
+
+    assert load_manifest(output_dir, first.doc_id) == first
+    assert all((output_dir / page.path).is_file() for page in first.pages)
+    assert list(output_dir.glob(".tmp-*")) == []
+    assert list(output_dir.glob(".old-*")) == []
 
 
 def test_render_pdf_ignores_manifest_for_another_document(tmp_path: Path, output_dir: Path) -> None:
@@ -229,5 +269,25 @@ def test_render_pdf_rejects_unreadable_file(
 
     with pytest.raises(InvalidPDFError, match="Cannot open"):
         render_pdf(pdf_path, output_dir)
+
+    assert not output_dir.exists()
+
+
+@pytest.mark.parametrize(
+    ("dpi", "max_pages"),
+    [
+        pytest.param(0, 5, id="zero-dpi"),
+        pytest.param(-1, 5, id="negative-dpi"),
+        pytest.param(144, 0, id="zero-max-pages"),
+        pytest.param(144, -1, id="negative-max-pages"),
+    ],
+)
+def test_render_pdf_rejects_non_positive_arguments(
+    tmp_path: Path, output_dir: Path, dpi: int, max_pages: int
+) -> None:
+    pdf_path = make_pdf(tmp_path / "doc.pdf")
+
+    with pytest.raises(ValueError, match="must be positive"):
+        render_pdf(pdf_path, output_dir, dpi=dpi, max_pages=max_pages)
 
     assert not output_dir.exists()
