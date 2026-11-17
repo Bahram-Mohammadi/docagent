@@ -1,6 +1,7 @@
 """Render PDF pages to PNG images."""
 
 import hashlib
+import re
 import shutil
 import uuid
 from pathlib import Path
@@ -14,6 +15,7 @@ POINTS_PER_INCH = 72
 DEFAULT_MAX_PAGES = 500
 MAX_PIXELS_PER_PAGE = 50_000_000
 MANIFEST_NAME = "manifest.json"
+DOC_ID_PATTERN = r"^[0-9a-f]{64}$"  # lowercase SHA-256 hex, as compute_doc_id returns
 
 
 class InvalidPDFError(ValueError):
@@ -57,6 +59,30 @@ def _load_manifest(path: Path) -> RenderedDocument | None:
         return RenderedDocument.model_validate_json(path.read_bytes())
     except (OSError, ValidationError):
         return None
+
+
+def load_rendered_document(output_dir: Path, doc_id: str, *, dpi: int) -> RenderedDocument | None:
+    """Return the saved render of doc_id at dpi, or None if there is no complete one.
+
+    A saved render counts only if its manifest parses, matches doc_id and dpi,
+    and every page image it lists exists.
+
+    Raises:
+        ValueError: doc_id is not a lowercase SHA-256 hex digest.
+    """
+    if re.fullmatch(DOC_ID_PATTERN, doc_id) is None:
+        raise ValueError(f"Invalid document ID: {doc_id!r}")
+
+    saved = _load_manifest(output_dir / doc_id / MANIFEST_NAME)
+
+    if (
+        saved is not None
+        and saved.doc_id == doc_id
+        and saved.dpi == dpi
+        and all((output_dir / page.path).is_file() for page in saved.pages)
+    ):
+        return saved
+    return None
 
 
 def _render_page(
@@ -106,9 +132,8 @@ def render_pdf(
 ) -> RenderedDocument:
     """Render every page of a PDF to PNG under output_dir/<doc_id>/.
 
-    If output_dir/<doc_id>/ already holds a valid manifest at the same DPI and
-    every page image it lists exists,, that saved result is returned without
-    opening the PDF.
+    If a complete render already exists at this DPI (see load_rendered_document),
+    it is returned without opening the PDF.
 
     Otherwise, pages are written to a temporary folder inside output_dir and moved
     into place only after every page succeeds, so output_dir/<doc_id>/ is either
@@ -132,14 +157,8 @@ def render_pdf(
     doc_id = compute_doc_id(pdf_path)
     doc_dir = output_dir / doc_id
 
-    saved = _load_manifest(doc_dir / MANIFEST_NAME)
-
-    if (
-        saved is not None
-        and saved.doc_id == doc_id
-        and saved.dpi == dpi
-        and all((output_dir / page.path).is_file() for page in saved.pages)
-    ):
+    saved = load_rendered_document(output_dir, doc_id, dpi=dpi)
+    if saved is not None:
         return saved
 
     scale = dpi / POINTS_PER_INCH

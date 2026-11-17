@@ -13,6 +13,7 @@ from docagent_core.ingestion.render import (
     InvalidPDFError,
     RenderedDocument,
     compute_doc_id,
+    load_rendered_document,
     render_pdf,
 )
 
@@ -221,6 +222,59 @@ def test_render_pdf_ignores_manifest_for_another_document(tmp_path: Path, output
 
     assert second == first
     assert load_manifest(output_dir, second.doc_id) == second
+
+
+# --- load_rendered_document ---------------------------------------------------
+
+
+def test_load_rendered_document_returns_none_when_nothing_is_rendered(output_dir: Path) -> None:
+    # output_dir does not exist either: a lookup must not fail or create anything.
+    assert load_rendered_document(output_dir, "0" * 64, dpi=144) is None
+    assert not output_dir.exists()
+
+
+def test_load_rendered_document_returns_saved_render(tmp_path: Path, output_dir: Path) -> None:
+    pdf_path = make_pdf(tmp_path / "doc.pdf", page_count=2)
+    result = render_pdf(pdf_path, output_dir)
+
+    saved = load_rendered_document(output_dir, result.doc_id, dpi=result.dpi)
+
+    assert saved == result
+
+
+def test_load_rendered_document_returns_none_for_another_dpi(
+    tmp_path: Path, output_dir: Path
+) -> None:
+    pdf_path = make_pdf(tmp_path / "doc.pdf")
+    result = render_pdf(pdf_path, output_dir, dpi=72)
+
+    assert load_rendered_document(output_dir, result.doc_id, dpi=144) is None
+
+
+def test_load_rendered_document_returns_none_when_a_page_image_is_missing(
+    tmp_path: Path, output_dir: Path
+) -> None:
+    pdf_path = make_pdf(tmp_path / "doc.pdf", page_count=2)
+    result = render_pdf(pdf_path, output_dir)
+    (output_dir / result.pages[1].path).unlink()
+
+    assert load_rendered_document(output_dir, result.doc_id, dpi=result.dpi) is None
+
+
+@pytest.mark.parametrize(
+    "doc_id",
+    [
+        pytest.param("not-a-hash", id="not-hex"),
+        pytest.param("a" * 63, id="too-short"),
+        pytest.param("a" * 65, id="too-long"),
+        pytest.param("A" * 64, id="uppercase"),
+        pytest.param("../" + "a" * 61, id="path-traversal"),
+        pytest.param("/etc", id="absolute-path"),
+    ],
+)
+def test_load_rendered_document_rejects_malformed_ids(output_dir: Path, doc_id: str) -> None:
+    with pytest.raises(ValueError, match="Invalid document ID"):
+        load_rendered_document(output_dir, doc_id, dpi=144)
 
 
 # --- render_pdf: limits and invalid input --------------------------------------
