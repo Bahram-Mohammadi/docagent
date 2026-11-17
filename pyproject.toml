@@ -61,3 +61,6 @@ markers = [
 
 [tool.coverage.run]
 source = ["docagent_core", "docagent_api"]
+
+[tool.pyright]
+extraPaths = ["services/api"]

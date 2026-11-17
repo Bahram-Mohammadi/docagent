@@ -31,7 +31,7 @@ Template:
 - Consequences: invalid config fails at startup with a clear error; secrets are hidden in logs.
 
 ## ADR-003: One root package for all services (for now)
-- Date: 2026-10-23
+- Date: 2026-10-23 (consequences updated 2026-11-17)
 - Context: the API is the first service in `services/`. More will follow (retriever, MCP tools, sandbox, UI) with very different dependencies: the retriever needs PyTorch and GPU libraries, while the API and sandbox need only light web libraries. We have to decide how the Python code of several services is packaged and installed.
 - Options:
   1. One `pyproject.toml` at the repo root that installs everything, with each service's code in `services/<name>/<package>/`.
@@ -39,9 +39,9 @@ Template:
 - Decision: option 1 while the API is the only service. It needs no extra setup and keeps one lock file, which lets us focus on building features first.
 - Consequences:
   - Easier: one `uv sync`, one lock file, one CI job.
-  - Harder: tools do not find `services/api` on their own, so four settings point at it (pytest `pythonpath`, mypy `mypy_path`, ruff `src`, coverage `source`), and each new service adds another entry to all four.
+  - Harder: only `docagent_core` is installed, so tools do not find `services/api` on their own. Five settings point at it: pytest `pythonpath`, mypy `mypy_path`, ruff `src`, coverage `source`, and Pyright `extraPaths` (the type checker behind VS Code). Each new service adds another entry to all five. Anything outside these tools, such as `python -c "import docagent_api"`, needs `PYTHONPATH=services/api`.
   - Harder: every Docker image would install every dependency, so the small API image would carry the retriever's GPU libraries.
-  - Revisit when the second service (the retriever) is added: split into a uv workspace so each image installs only what it needs and the four path settings can be removed.
+  - Revisit when the second service (the retriever) is added: split into a uv workspace so each image installs only what it needs and the five path settings can be removed.
 
 ## ADR-004: python:3.12-slim as the base image, with Python 3.12 everywhere
 - Date: 2026-10-25
@@ -108,7 +108,7 @@ Template:
   - Revisit when the retriever starts writing to and querying Qdrant: query behaviour needs container-backed integration tests (option 2), because fakes cannot reproduce it faithfully.
 
 ## ADR-008: pypdfium2 for rendering PDF pages, in `docagent_core/ingestion/`
-- Date: 2026-11-02 (consequences updated 2026-11-03 after implementation)
+- Date: 2026-11-02 (consequences updated 2026-11-03 and 2026-11-05 after implementation and review)
 - Context: both retrieval pipelines start from page images (ColQwen2 embeds whole pages), and the vision-language model reads charts and tables from images, so every uploaded PDF must be rendered to one image per page. The project is MIT-licensed and offered as a network service, so dependency licences matter. Installs must be reproducible across local development, CI and Docker images (ADR-001, ADR-004). Uploaded PDFs come from untrusted users, so rendering must not be a way to exhaust memory or disk. The code also needs a home: ADR-003 keeps one root package, and only `docagent_core` is built and installed.
 - Options:
   1. PyMuPDF (MuPDF engine): fast, with a rich API and good text extraction, installed as a pip wheel. Licensed under AGPL-3.0, whose network clause requires the complete source of any program built on it to be offered under AGPL to its network users. That would override the project's MIT terms for anyone deploying it, and many companies do not allow AGPL dependencies. A commercial licence exists, but is not an option for an open project.
