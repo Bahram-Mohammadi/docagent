@@ -6,6 +6,7 @@ from typing import Annotated, Literal
 from fastapi import Depends, FastAPI, Response, status
 from pydantic import BaseModel
 
+from docagent_api.documents import router as documents_router
 from docagent_api.readiness import is_qdrant_ready
 from docagent_core import __version__ as docagent_version
 from docagent_core.config import Settings, get_settings
@@ -68,6 +69,8 @@ def create_app() -> FastAPI:
             status="ready" if all_ready else "not_ready",
             checks=checks,
         )
+
+    app.include_router(documents_router)
 
     return app
 
