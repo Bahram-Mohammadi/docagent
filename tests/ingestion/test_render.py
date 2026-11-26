@@ -13,6 +13,7 @@ from docagent_core.ingestion.render import (
     InvalidPDFError,
     RenderedDocument,
     compute_doc_id,
+    load_rendered_document,
     render_pdf,
 )
 
@@ -156,6 +157,7 @@ def test_render_pdf_rerenders_when_dpi_changes(tmp_path: Path, output_dir: Path)
     with Image.open(output_dir / result.pages[0].path) as image:
         assert image.size == (200, 400)
     assert list(output_dir.glob(".tmp-*")) == []
+    assert list(output_dir.glob(".old-*")) == []
 
 
 def test_render_pdf_rerenders_when_manifest_is_damaged(tmp_path: Path, output_dir: Path) -> None:
@@ -170,6 +172,45 @@ def test_render_pdf_rerenders_when_manifest_is_damaged(tmp_path: Path, output_di
     assert load_manifest(output_dir, second.doc_id) == second
 
 
+def test_render_pdf_rerenders_when_a_page_image_is_missing(
+    tmp_path: Path, output_dir: Path
+) -> None:
+    pdf_path = make_pdf(tmp_path / "doc.pdf", page_count=2)
+    first = render_pdf(pdf_path, output_dir)
+    missing = output_dir / first.pages[1].path
+    missing.unlink()
+
+    second = render_pdf(pdf_path, output_dir)
+
+    assert second == first
+    assert missing.is_file()
+    assert list(output_dir.glob(".old-*")) == []
+
+
+def test_render_pdf_keeps_old_render_when_replacement_fails(
+    tmp_path: Path, output_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pdf_path = make_pdf(tmp_path / "doc.pdf")
+    first = render_pdf(pdf_path, output_dir, dpi=72)
+
+    real_rename = Path.rename
+
+    def failing_rename(self: Path, target: Path) -> Path:
+        if self.name.startswith(".tmp-"):
+            raise OSError("simulated failure")
+        return real_rename(self, target)
+
+    monkeypatch.setattr(Path, "rename", failing_rename)
+
+    with pytest.raises(OSError, match="simulated failure"):
+        render_pdf(pdf_path, output_dir, dpi=144)
+
+    assert load_manifest(output_dir, first.doc_id) == first
+    assert all((output_dir / page.path).is_file() for page in first.pages)
+    assert list(output_dir.glob(".tmp-*")) == []
+    assert list(output_dir.glob(".old-*")) == []
+
+
 def test_render_pdf_ignores_manifest_for_another_document(tmp_path: Path, output_dir: Path) -> None:
     pdf_path = make_pdf(tmp_path / "doc.pdf")
     first = render_pdf(pdf_path, output_dir)
@@ -181,6 +222,59 @@ def test_render_pdf_ignores_manifest_for_another_document(tmp_path: Path, output
 
     assert second == first
     assert load_manifest(output_dir, second.doc_id) == second
+
+
+# --- load_rendered_document ---------------------------------------------------
+
+
+def test_load_rendered_document_returns_none_when_nothing_is_rendered(output_dir: Path) -> None:
+    # output_dir does not exist either: a lookup must not fail or create anything.
+    assert load_rendered_document(output_dir, "0" * 64, dpi=144) is None
+    assert not output_dir.exists()
+
+
+def test_load_rendered_document_returns_saved_render(tmp_path: Path, output_dir: Path) -> None:
+    pdf_path = make_pdf(tmp_path / "doc.pdf", page_count=2)
+    result = render_pdf(pdf_path, output_dir)
+
+    saved = load_rendered_document(output_dir, result.doc_id, dpi=result.dpi)
+
+    assert saved == result
+
+
+def test_load_rendered_document_returns_none_for_another_dpi(
+    tmp_path: Path, output_dir: Path
+) -> None:
+    pdf_path = make_pdf(tmp_path / "doc.pdf")
+    result = render_pdf(pdf_path, output_dir, dpi=72)
+
+    assert load_rendered_document(output_dir, result.doc_id, dpi=144) is None
+
+
+def test_load_rendered_document_returns_none_when_a_page_image_is_missing(
+    tmp_path: Path, output_dir: Path
+) -> None:
+    pdf_path = make_pdf(tmp_path / "doc.pdf", page_count=2)
+    result = render_pdf(pdf_path, output_dir)
+    (output_dir / result.pages[1].path).unlink()
+
+    assert load_rendered_document(output_dir, result.doc_id, dpi=result.dpi) is None
+
+
+@pytest.mark.parametrize(
+    "doc_id",
+    [
+        pytest.param("not-a-hash", id="not-hex"),
+        pytest.param("a" * 63, id="too-short"),
+        pytest.param("a" * 65, id="too-long"),
+        pytest.param("A" * 64, id="uppercase"),
+        pytest.param("../" + "a" * 61, id="path-traversal"),
+        pytest.param("/etc", id="absolute-path"),
+    ],
+)
+def test_load_rendered_document_rejects_malformed_ids(output_dir: Path, doc_id: str) -> None:
+    with pytest.raises(ValueError, match="Invalid document ID"):
+        load_rendered_document(output_dir, doc_id, dpi=144)
 
 
 # --- render_pdf: limits and invalid input --------------------------------------
@@ -229,5 +323,25 @@ def test_render_pdf_rejects_unreadable_file(
 
     with pytest.raises(InvalidPDFError, match="Cannot open"):
         render_pdf(pdf_path, output_dir)
+
+    assert not output_dir.exists()
+
+
+@pytest.mark.parametrize(
+    ("dpi", "max_pages"),
+    [
+        pytest.param(0, 5, id="zero-dpi"),
+        pytest.param(-1, 5, id="negative-dpi"),
+        pytest.param(144, 0, id="zero-max-pages"),
+        pytest.param(144, -1, id="negative-max-pages"),
+    ],
+)
+def test_render_pdf_rejects_non_positive_arguments(
+    tmp_path: Path, output_dir: Path, dpi: int, max_pages: int
+) -> None:
+    pdf_path = make_pdf(tmp_path / "doc.pdf")
+
+    with pytest.raises(ValueError, match="must be positive"):
+        render_pdf(pdf_path, output_dir, dpi=dpi, max_pages=max_pages)
 
     assert not output_dir.exists()

@@ -6,7 +6,7 @@
 ![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)
 ![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)
 
-> **Status:** 🚧 v0.1 (multimodal RAG baseline) in progress. Done so far: project tooling and CI, the API service with health and readiness endpoints, its Docker image, a Docker Compose stack with Qdrant that is smoke-tested in CI, and PDF page rendering with safety limits and caching.
+> **Status:** 🚧 v0.1 (multimodal RAG baseline) in progress. Done so far: project tooling and CI, the API service with health and readiness endpoints, its Docker image, a Docker Compose stack with Qdrant that is smoke-tested in CI, PDF page rendering with safety limits and caching, and a documents API that uploads PDFs and stores their rendered pages on a Docker volume.
 
 <!-- Add a 15-second demo GIF here once the UI exists. -->
 
@@ -35,7 +35,7 @@ Ask a question such as *"Compare the revenue growth of Company A and Company B o
 
 | Service | Role | GPU | Available |
 | --- | --- | --- | --- |
-| `api` | FastAPI + LangGraph agent | No | ✅ health and readiness only |
+| `api` | FastAPI + LangGraph agent | No | ✅ health, readiness and document upload |
 | `qdrant` | Vector database | No | ✅ |
 | `ui` | Chat, live agent trace, document viewer | No | – |
 | `vlm` | vLLM serving Qwen2.5-VL | Yes | – |
@@ -76,6 +76,7 @@ This builds the API image, starts Qdrant and the API, and returns once every ser
 | --- | --- |
 | <http://127.0.0.1:8000/health> | Liveness: `200` while the API process is running |
 | <http://127.0.0.1:8000/ready> | Readiness: `200` when every dependency is reachable, otherwise `503` with a per-dependency `checks` map |
+| <http://127.0.0.1:8000/documents> | Upload PDFs (`POST`) and fetch their rendered pages (`GET`); see [Upload a document](#upload-a-document) |
 | <http://127.0.0.1:8000/docs> | Interactive API documentation |
 | <http://127.0.0.1:6333/dashboard> | Qdrant web dashboard |
 
@@ -89,11 +90,11 @@ Ports are bound to `127.0.0.1`, so nothing is reachable from other machines. Thi
 | --- | --- |
 | `make ps` | List services and their health, including stopped ones |
 | `make logs` | Follow the logs of all services (`make logs SERVICE=api` for one) |
-| `make down` | Stop and remove the containers. **Qdrant data is kept.** |
-| `make reset` | Stop everything and **delete all Qdrant data** (asks for confirmation) |
+| `make down` | Stop and remove the containers. **Qdrant data and rendered pages are kept.** |
+| `make reset` | Stop everything and **delete all Qdrant data and rendered pages** (asks for confirmation) |
 | `make smoke` | Run the end-to-end smoke test (see [Testing](#testing)) |
 
-Qdrant stores its data in the named Docker volume `docagent_qdrant_data`, so it survives `make down` and image rebuilds. See ADR-005 in [docs/decisions.md](docs/decisions.md) for why a named volume is used rather than a folder in the repository.
+Data lives in two named Docker volumes, so it survives `make down` and image rebuilds: Qdrant's data in `docagent_qdrant_data`, and rendered PDF pages in `docagent_pages_data`. See ADR-005 in [docs/decisions.md](docs/decisions.md) for why named volumes are used rather than folders in the repository.
 
 Without `make`, the equivalent commands are:
 
@@ -113,16 +114,59 @@ make docker-run
 make docker-stop
 ```
 
-In this mode `/health` returns `200`, but `/ready` returns `503`, because there is no Qdrant to reach.
+In this mode `/health` returns `200`, but `/ready` returns `503`, because there is no Qdrant to reach. Uploads work, but their pages are stored inside the container and are lost when it is removed, because no volume is mounted.
+
+## Upload a document
+
+With the stack running (`make up`), upload a PDF:
+
+```bash
+curl -i -F "file=@report.pdf" http://127.0.0.1:8000/documents
+```
+
+The response describes the rendered pages:
+
+```json
+{"doc_id": "3f5a…", "dpi": 144, "page_count": 12,
+ "pages": [{"page_number": 1, "width": 1191, "height": 1684}, …]}
+```
+
+| Status | Meaning |
+| --- | --- |
+| `201 Created` | A new document was rendered. The `Location` header gives its URL. |
+| `200 OK` | This exact file was uploaded before. The saved result is returned without rendering again. |
+| `413 Content Too Large` | The file is larger than `MAX_UPLOAD_BYTES`. |
+| `422 Unprocessable Content` | The file is not a usable PDF: it cannot be opened, has more than `MAX_PAGES` pages, or has a page too large to render. |
+
+The document ID is the SHA-256 hash of the file's content, so uploading the same file again is always safe. Fetch a document's pages later with:
+
+```bash
+curl http://127.0.0.1:8000/documents/<doc_id>
+```
+
+Rendering runs while the request waits, one document at a time. Large documents can take a while; see ADR-009 in [docs/decisions.md](docs/decisions.md) for this trade-off and the plan for background jobs.
+
+### Configuration
+
+Settings are read from environment variables or `.env` (see `.env.example`):
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `PAGES_DIR` | `data/pages` | Where rendered pages are stored. The Docker image sets `/data/pages`, the mounted volume. |
+| `MAX_UPLOAD_BYTES` | `52428800` (50 MB) | Largest accepted upload |
+| `RENDER_DPI` | `144` | Resolution of the page images (1 to 600) |
+| `MAX_PAGES` | `500` | Largest accepted page count |
+
+Invalid values stop the service at startup with a clear error. When running the API outside Docker, rendered pages go to `data/pages/`, which Git ignores.
 
 ## Testing
 
 | Layer | Command | What it covers | Needs |
 | --- | --- | --- | --- |
-| Unit | `make test` | Routes, readiness logic, settings and PDF page rendering, with external services replaced by fakes | Python only |
-| Smoke | `make smoke` | The real stack: builds the image, starts Qdrant and the API, stops and restarts Qdrant, and checks that `/ready` follows it | Docker |
+| Unit | `make test` | Routes, readiness logic, settings, upload saving and PDF page rendering, with external services replaced by fakes | Python only |
+| Smoke | `make smoke` | The real stack: builds the image, starts Qdrant and the API, stops and restarts Qdrant, uploads PDFs, and replaces the API container to check that rendered pages persist | Docker |
 
-`make check` runs linting, type checking and the unit tests. The rendering tests generate their PDFs during the test run, so no binary test files are stored in the repository. The smoke test uses its own Compose project (`docagent-smoke`) and deletes everything it created when it finishes, so your development data is never touched. Stop your development stack first (`make down`), because both use the same ports.
+`make check` runs linting, type checking and the unit tests. The unit tests generate their PDFs during the test run. The smoke test uses one small committed file, `tests/fixtures/sample.pdf`, so its document ID is the same on every run. The smoke test uses its own Compose project (`docagent-smoke`) and deletes everything it created when it finishes, so your development data is never touched. Stop your development stack first (`make down`), because both use the same ports.
 
 CI runs both layers on every pull request: the `check` job runs `make lint`, `make typecheck` and `make test`, and the `docker` job builds the image and runs `make smoke`. Tests marked `gpu` are excluded from both.
 
@@ -135,7 +179,7 @@ docagent_core/ingestion/  PDF page rendering; parsing and chunking will follow
 training/                 LoRA fine-tuning of the chart reader
 eval/                     benchmarks, metrics, ablations
 scripts/                  developer and CI scripts (smoke test)
-tests/                    unit and integration tests
+tests/                    unit tests; tests/fixtures/ holds small files for the smoke test
 docs/                     architecture, design decisions, evaluation report
 ```
 

@@ -7,7 +7,7 @@ Template:
 
 ```
 ## ADR-NNN: <title>
-- Date:
+- Date: 2026-11-01 (consequences updated 2026-11-26)
 - Context: what problem or constraint forced a choice
 - Options: what you considered
 - Decision: what you chose
@@ -31,7 +31,7 @@ Template:
 - Consequences: invalid config fails at startup with a clear error; secrets are hidden in logs.
 
 ## ADR-003: One root package for all services (for now)
-- Date: 2026-10-23
+- Date: 2026-10-23 (consequences updated 2026-11-17)
 - Context: the API is the first service in `services/`. More will follow (retriever, MCP tools, sandbox, UI) with very different dependencies: the retriever needs PyTorch and GPU libraries, while the API and sandbox need only light web libraries. We have to decide how the Python code of several services is packaged and installed.
 - Options:
   1. One `pyproject.toml` at the repo root that installs everything, with each service's code in `services/<name>/<package>/`.
@@ -39,9 +39,9 @@ Template:
 - Decision: option 1 while the API is the only service. It needs no extra setup and keeps one lock file, which lets us focus on building features first.
 - Consequences:
   - Easier: one `uv sync`, one lock file, one CI job.
-  - Harder: tools do not find `services/api` on their own, so four settings point at it (pytest `pythonpath`, mypy `mypy_path`, ruff `src`, coverage `source`), and each new service adds another entry to all four.
+  - Harder: only `docagent_core` is installed, so tools do not find `services/api` on their own. Five settings point at it: pytest `pythonpath`, mypy `mypy_path`, ruff `src`, coverage `source`, and Pyright `extraPaths` (the type checker behind VS Code). Each new service adds another entry to all five. Anything outside these tools, such as `python -c "import docagent_api"`, needs `PYTHONPATH=services/api`.
   - Harder: every Docker image would install every dependency, so the small API image would carry the retriever's GPU libraries.
-  - Revisit when the second service (the retriever) is added: split into a uv workspace so each image installs only what it needs and the four path settings can be removed.
+  - Revisit when the second service (the retriever) is added: split into a uv workspace so each image installs only what it needs and the five path settings can be removed.
 
 ## ADR-004: python:3.12-slim as the base image, with Python 3.12 everywhere
 - Date: 2026-10-25
@@ -75,6 +75,7 @@ Template:
   - Harder: the files are not visible in the project folder. To inspect or back them up, mount the volume in a throwaway container, e.g. `docker run --rm -v docagent_qdrant_data:/data -v "$PWD":/backup busybox tar czf /backup/qdrant.tgz -C /data .`. For a consistent backup of a running database, Qdrant's snapshot API is the better tool.
   - Harder: `docker compose down -v` deletes the volume. Plain `make down` keeps it; the only command that deletes it is `make reset`, which asks for confirmation first. The smoke test uses its own Compose project, so it gets its own volume (`docagent-smoke_qdrant_data`) and never touches development data.
   - Revisit for a real deployment, where storage would be a managed volume (for example a Kubernetes PersistentVolumeClaim) or a hosted Qdrant, or if data ever needs to be shared directly with tools on the host.
+  - Since Step 5, the API's rendered pages use a second named volume, `pages_data:/data/pages`, for the same reasons. The image creates `/data/pages` owned by the app user (uid 10001), so a new volume is writable without extra steps. `make reset` deletes rendered pages along with Qdrant's data; both can be rebuilt by uploading the documents again.
 
 ## ADR-006: Separate liveness (`/health`) and readiness (`/ready`) endpoints
 - Date: 2026-11-01
@@ -108,7 +109,7 @@ Template:
   - Revisit when the retriever starts writing to and querying Qdrant: query behaviour needs container-backed integration tests (option 2), because fakes cannot reproduce it faithfully.
 
 ## ADR-008: pypdfium2 for rendering PDF pages, in `docagent_core/ingestion/`
-- Date: 2026-11-02 (consequences updated 2026-11-03 after implementation)
+- Date: 2026-11-02 (consequences updated 2026-11-03 and 2026-11-05 after implementation and review)
 - Context: both retrieval pipelines start from page images (ColQwen2 embeds whole pages), and the vision-language model reads charts and tables from images, so every uploaded PDF must be rendered to one image per page. The project is MIT-licensed and offered as a network service, so dependency licences matter. Installs must be reproducible across local development, CI and Docker images (ADR-001, ADR-004). Uploaded PDFs come from untrusted users, so rendering must not be a way to exhaust memory or disk. The code also needs a home: ADR-003 keeps one root package, and only `docagent_core` is built and installed.
 - Options:
   1. PyMuPDF (MuPDF engine): fast, with a rich API and good text extraction, installed as a pip wheel. Licensed under AGPL-3.0, whose network clause requires the complete source of any program built on it to be offered under AGPL to its network users. That would override the project's MIT terms for anyone deploying it, and many companies do not allow AGPL dependencies. A commercial licence exists, but is not an option for an open project.
@@ -119,14 +120,38 @@ Template:
   - Easier: no licence conflict, so the project stays freely usable and deployable under MIT.
   - Easier: one `uv add`, with the exact version pinned in `uv.lock`, so rendering is identical on laptops, in CI and in images. No `apt` packages, Dockerfile changes or extra CI steps.
   - Easier: one PDF engine across the pipeline. The pages we render come from the same engine Docling uses for parsing, so page geometry matches when evidence boxes are drawn later.
-  - Easier: as a `docagent_core` subpackage, the code is already covered by the wheel build, mypy, coverage and the Dockerfile's `COPY docagent_core/`, so no configuration changes are needed. The API (`POST /ingest`) and later services can import it.
-  - Easier: rendering is idempotent and atomic. Pages are written to a temporary folder inside the output directory and renamed into place only after every page succeeds, so `<output_dir>/<doc_id>/` is either complete or absent. A `manifest.json`, written last, marks a document as complete; a second request at the same DPI returns the saved result without opening the PDF, and a different DPI replaces the earlier render.
+  - Easier: as a `docagent_core` subpackage, the code is already covered by the wheel build, mypy, coverage and the Dockerfile's `COPY docagent_core/`, so no configuration changes are needed. The API (`POST /documents`) and later services can import it.
+  - Easier: rendering is idempotent, and a failed render leaves nothing behind. Pages are written to a temporary folder inside the output directory and moved into place only after every page succeeds. A `manifest.json`, written last, marks a document as complete, so a repeated request reuses the saved result (see cache validation below).
   - Easier: page paths are stored relative to the output directory, so saved results stay valid when the folder is moved or mounted somewhere else (for example inside a container).
   - Harder: the API is lower-level than PyMuPDF. Documents, pages and bitmaps must be opened and closed explicitly, so each is released in a `try`/`finally` by the code that created it.
-  - Harder: PDFium is not thread-safe, so pages must not be rendered from several threads in one process at once. Rendering runs sequentially; if it becomes a bottleneck, use separate processes, not threads.
   - Harder: text extraction is basic compared with PyMuPDF. This is acceptable because Docling handles text, layout and tables.
   - Harder: pypdfium2 ships no type information, so a mypy override treats it as `Any`. All pypdfium2 calls stay inside `render.py`, and its typed results (`RenderedPage`, `RenderedDocument`) are the checked boundary for the rest of the code.
   - Harder: the document ID is a hash of the file's bytes, so only exact copies are recognised as duplicates. A re-exported or re-saved copy of the same document usually differs (for example in embedded timestamps), gets a new ID and is rendered again. Recognising near-duplicates would need a comparison of extracted text or page images.
-  - Harder: the cache trusts the manifest and does not check that every page image still exists. This is acceptable because rendered folders are only written through `render_pdf`; checking each file would be cheap if folders are ever edited by hand. A damaged manifest, or one whose `doc_id` does not match its folder, is treated as missing and the document is rendered again.
+  - Cache validation: a saved result is reused only if its manifest parses, matches the document and DPI, and every page image it lists exists. Otherwise the document is re-rendered. Image contents are not verified, so a corrupted PNG with the right name is still trusted.
+  - Safe replacement: a re-render (a different DPI, or missing images) moves the old folder aside, moves the new one into place, and only then deletes the old one. If the swap fails, the old render is restored. A crash between the two renames can leave a `.old-*` or `.tmp-*` folder. No data is lost, and a startup clean-up can remove them later.
+  - Concurrency: PDFium is not thread-safe, so pages must never be rendered from several threads in one process at once. The API serializes rendering with a process-wide lock (ADR-009, planned); if rendering becomes a bottleneck, use separate processes, not threads. Two processes rendering the same new PDF at once would make the second request fail even though the render exists. Revisit (accept a valid existing manifest, or add a file lock) before running several API workers.
   - Security: `render_pdf` rejects files that cannot be opened as PDFs, files with more than `max_pages` pages (default 500), and pages that would exceed 50 million pixels at the requested DPI. The page size is checked from its declared dimensions before rendering, so an oversized or decompression-bomb PDF is refused before any memory is spent on it. All three raise `InvalidPDFError`, so callers can reject bad uploads without depending on pypdfium2.
+  - Argument checks: `render_pdf` rejects a non-positive `dpi` or `max_pages` with `ValueError`, a caller error, kept separate from `InvalidPDFError`, a bad file. The API maps only `InvalidPDFError` to a client error.
   - Revisit if rendering quality or speed proves inadequate on the evaluation documents, or when ADR-003's workspace split happens with the retriever, at which point ingestion may become its own package.
+
+
+## ADR-009: Render uploads synchronously, behind a process-wide lock
+- Date: 2026-11-26
+- Context: `POST /documents` must turn an uploaded PDF into page images (ADR-008). Rendering is blocking CPU and disk work that can take from a fraction of a second to minutes for a 500-page document. PDFium is not thread-safe, so two renders must never run at once in one process, even for different PDFs. FastAPI runs `async def` routes on the event loop and plain `def` routes in a thread pool, where several can run at the same time. Uploads come from untrusted clients, and Starlette receives the whole request body before the route runs.
+- Options:
+  1. An `async def` route that renders directly: rendering would block the event loop, so the whole server, `/health` included, would stop responding during a render, and Docker would restart a healthy container.
+  2. A `def` route that renders in the request, with one `threading.Lock` around rendering for the whole process.
+  3. Background jobs: return `202 Accepted` with a job URL straight away, render in separate worker processes, and let the client poll for the result. This needs a queue, workers, job-status storage and a polling API.
+  4. A process pool per request: renders could run in parallel safely, but process start-up, passing files between processes, and shutting the pool down add complexity without a measured need.
+- Decision: option 2. The route saves the upload with a size limit into a per-request staging folder inside `pages_dir`, takes the lock, computes the document ID, returns the existing render if there is one (`200`), and otherwise renders it (`201` with `Location`). The staging folder is deleted in every case. `GET /documents/{doc_id}` reads the manifest without taking the lock.
+- Consequences:
+  - Easier: one request gives the final answer, with no job state to store or poll. Errors are immediate and specific: `413` for a file over `max_upload_bytes`, `422` for a file that is not a usable PDF.
+  - Easier: uploads are idempotent. The document ID is the content hash, so a retried upload returns the same document with `200` instead of rendering it again.
+  - Easier: the lock is held for the hash, the lookup and the render together, so two uploads of the same new PDF cannot both render it; the second waits and gets `200`.
+  - Harder: only one render runs at a time in each process. A large document makes other uploads wait, and a long render can exceed a client's or proxy's timeout.
+  - Harder: the lock does not work across processes. Several uvicorn workers or replicas would each render independently, which is safe for PDFium but can make a request fail when two processes finish the same document (see ADR-008, concurrency).
+  - Harder: the size limit is enforced while the upload is copied, not while it is received. Starlette has already stored the whole body in a temporary file by then, so a huge request still uses the server's bandwidth and temporary disk space. A real deployment needs a request-body limit in front of the app (for example nginx `client_max_body_size`).
+  - Harder: `GET` does not wait for a render in progress. During the brief folder swap of a re-render it can return `404`; a retry succeeds.
+  - Note: the original PDF is not kept after rendering, because nothing reads it yet. Step 6 (parsing with Docling) needs it and will decide where originals are stored.
+  - Note: a process killed mid-request can leave a folder in `<pages_dir>/.uploads/`. Nothing reads these folders, and a startup clean-up can remove them later.
+  - Revisit (option 3) when renders regularly take longer than a client should wait, when several users upload at once, or before running more than one API worker. Add the request-body limit when the API is deployed behind a reverse proxy.

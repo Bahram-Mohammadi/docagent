@@ -12,6 +12,7 @@ dependencies = [
     "pydantic>=2.7",
     "pydantic-settings>=2.3",
     "pypdfium2>=5.14.0",
+    "python-multipart>=0.0.33",
     "uvicorn[standard]>=0.54.0",
 ]
 
@@ -60,3 +61,6 @@ markers = [
 
 [tool.coverage.run]
 source = ["docagent_core", "docagent_api"]
+
+[tool.pyright]
+extraPaths = ["services/api"]
