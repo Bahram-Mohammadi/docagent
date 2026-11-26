@@ -7,7 +7,7 @@ Template:
 
 ```
 ## ADR-NNN: <title>
-- Date:
+- Date: 2026-11-01 (consequences updated 2026-11-26)
 - Context: what problem or constraint forced a choice
 - Options: what you considered
 - Decision: what you chose
@@ -75,6 +75,7 @@ Template:
   - Harder: the files are not visible in the project folder. To inspect or back them up, mount the volume in a throwaway container, e.g. `docker run --rm -v docagent_qdrant_data:/data -v "$PWD":/backup busybox tar czf /backup/qdrant.tgz -C /data .`. For a consistent backup of a running database, Qdrant's snapshot API is the better tool.
   - Harder: `docker compose down -v` deletes the volume. Plain `make down` keeps it; the only command that deletes it is `make reset`, which asks for confirmation first. The smoke test uses its own Compose project, so it gets its own volume (`docagent-smoke_qdrant_data`) and never touches development data.
   - Revisit for a real deployment, where storage would be a managed volume (for example a Kubernetes PersistentVolumeClaim) or a hosted Qdrant, or if data ever needs to be shared directly with tools on the host.
+  - Since Step 5, the API's rendered pages use a second named volume, `pages_data:/data/pages`, for the same reasons. The image creates `/data/pages` owned by the app user (uid 10001), so a new volume is writable without extra steps. `make reset` deletes rendered pages along with Qdrant's data; both can be rebuilt by uploading the documents again.
 
 ## ADR-006: Separate liveness (`/health`) and readiness (`/ready`) endpoints
 - Date: 2026-11-01
@@ -132,3 +133,25 @@ Template:
   - Security: `render_pdf` rejects files that cannot be opened as PDFs, files with more than `max_pages` pages (default 500), and pages that would exceed 50 million pixels at the requested DPI. The page size is checked from its declared dimensions before rendering, so an oversized or decompression-bomb PDF is refused before any memory is spent on it. All three raise `InvalidPDFError`, so callers can reject bad uploads without depending on pypdfium2.
   - Argument checks: `render_pdf` rejects a non-positive `dpi` or `max_pages` with `ValueError`, a caller error, kept separate from `InvalidPDFError`, a bad file. The API maps only `InvalidPDFError` to a client error.
   - Revisit if rendering quality or speed proves inadequate on the evaluation documents, or when ADR-003's workspace split happens with the retriever, at which point ingestion may become its own package.
+
+
+## ADR-009: Render uploads synchronously, behind a process-wide lock
+- Date: 2026-11-26
+- Context: `POST /documents` must turn an uploaded PDF into page images (ADR-008). Rendering is blocking CPU and disk work that can take from a fraction of a second to minutes for a 500-page document. PDFium is not thread-safe, so two renders must never run at once in one process, even for different PDFs. FastAPI runs `async def` routes on the event loop and plain `def` routes in a thread pool, where several can run at the same time. Uploads come from untrusted clients, and Starlette receives the whole request body before the route runs.
+- Options:
+  1. An `async def` route that renders directly: rendering would block the event loop, so the whole server, `/health` included, would stop responding during a render, and Docker would restart a healthy container.
+  2. A `def` route that renders in the request, with one `threading.Lock` around rendering for the whole process.
+  3. Background jobs: return `202 Accepted` with a job URL straight away, render in separate worker processes, and let the client poll for the result. This needs a queue, workers, job-status storage and a polling API.
+  4. A process pool per request: renders could run in parallel safely, but process start-up, passing files between processes, and shutting the pool down add complexity without a measured need.
+- Decision: option 2. The route saves the upload with a size limit into a per-request staging folder inside `pages_dir`, takes the lock, computes the document ID, returns the existing render if there is one (`200`), and otherwise renders it (`201` with `Location`). The staging folder is deleted in every case. `GET /documents/{doc_id}` reads the manifest without taking the lock.
+- Consequences:
+  - Easier: one request gives the final answer, with no job state to store or poll. Errors are immediate and specific: `413` for a file over `max_upload_bytes`, `422` for a file that is not a usable PDF.
+  - Easier: uploads are idempotent. The document ID is the content hash, so a retried upload returns the same document with `200` instead of rendering it again.
+  - Easier: the lock is held for the hash, the lookup and the render together, so two uploads of the same new PDF cannot both render it; the second waits and gets `200`.
+  - Harder: only one render runs at a time in each process. A large document makes other uploads wait, and a long render can exceed a client's or proxy's timeout.
+  - Harder: the lock does not work across processes. Several uvicorn workers or replicas would each render independently, which is safe for PDFium but can make a request fail when two processes finish the same document (see ADR-008, concurrency).
+  - Harder: the size limit is enforced while the upload is copied, not while it is received. Starlette has already stored the whole body in a temporary file by then, so a huge request still uses the server's bandwidth and temporary disk space. A real deployment needs a request-body limit in front of the app (for example nginx `client_max_body_size`).
+  - Harder: `GET` does not wait for a render in progress. During the brief folder swap of a re-render it can return `404`; a retry succeeds.
+  - Note: the original PDF is not kept after rendering, because nothing reads it yet. Step 6 (parsing with Docling) needs it and will decide where originals are stored.
+  - Note: a process killed mid-request can leave a folder in `<pages_dir>/.uploads/`. Nothing reads these folders, and a startup clean-up can remove them later.
+  - Revisit (option 3) when renders regularly take longer than a client should wait, when several users upload at once, or before running more than one API worker. Add the request-body limit when the API is deployed behind a reverse proxy.

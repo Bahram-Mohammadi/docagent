@@ -15,14 +15,18 @@ and the project uses [Semantic Versioning](https://semver.org/).
 - CI builds the API Docker image on every pull request.
 - Docker Compose stack with Qdrant (`qdrant/qdrant:v1.20.0`) and the API. Qdrant has a health check, the API starts only once Qdrant is healthy, data is kept in the named volume `qdrant_data`, and ports are bound to `127.0.0.1` only.
 - `GET /ready` readiness endpoint: returns `200` when Qdrant is reachable and `503` with a per-dependency `checks` map when it is not, while `GET /health` keeps reporting liveness.
-- Make targets for the Compose stack: `up`, `down`, `reset` (deletes Qdrant data after confirmation), `logs`, `ps` and `smoke`. Running `make` on its own lists all targets.
-- End-to-end smoke test (`scripts/smoke.sh`, `make smoke`) that starts the real stack in a separate Compose project, stops and restarts Qdrant, checks that `/ready` and `/health` respond correctly, and prints container logs if a check fails.
+- Make targets for the Compose stack: `up`, `down`, `reset` (deletes all stored data after confirmation), `logs`, `ps` and `smoke`. Running `make` on its own lists all targets.
+- End-to-end smoke test (`scripts/smoke.sh`, `make smoke`) that starts the real stack in a separate Compose project, stops and restarts Qdrant, checks that `/ready` and `/health` respond correctly, uploads a PDF, and prints container logs if a check fails.
 - CI runs the smoke test on every pull request as part of the `docker` job.
-- `gpu` pytest marker for tests that need a CUDA GPU; these tests are excluded from `make test` and CI. Unknown markers are now an error (`--strict-markers`).
 - `gpu` pytest marker for tests that need a CUDA GPU; these tests are excluded from `make test` and CI. Unknown markers are now an error (`--strict-markers`).
 - PDF page rendering (`docagent_core.ingestion.render`): `render_pdf` renders every page of a PDF to PNG at a configurable DPI (default 144) under `<output_dir>/<doc_id>/`, where the document ID is the SHA-256 hash of the file's content. Uses `pypdfium2` and `pillow`, both new runtime dependencies.
 - Safety limits for rendering untrusted PDFs: files with more than 500 pages (configurable) or with a page that would exceed 50 million pixels are rejected with `InvalidPDFError` before anything is rendered, as are files that cannot be opened as PDFs.
-- Rendering writes pages to a temporary folder and moves them into place only when every page succeeds, so a failure leaves nothing behind. A `manifest.json` records the result; rendering the same file again at the same DPI returns the saved result without re-rendering.
+- Rendering writes pages to a temporary folder and moves them into place only when every page succeeds, so a failure leaves nothing behind. A `manifest.json` records the result. Rendering the same file again at the same DPI returns the saved result, unless a page image is missing, in which case the document is rendered again. A re-render keeps the previous result until the new one is in place.
+- `load_rendered_document` returns a document's saved render, and rejects document IDs that are not a lowercase SHA-256 hex digest, so an ID can never be used to reach files outside the output directory.
+- `POST /documents`: upload a PDF as the multipart field `file`. Returns `201` with a `Location` header for a new document, `200` with the same body when that exact file was uploaded before, `413` when the file is larger than the upload limit, and `422` when it is not a usable PDF. Uploads are streamed to disk in chunks, and the client's filename is never used. Renders run one at a time per process, because PDFium is not thread-safe (ADR-009).
+- `GET /documents/{doc_id}`: returns a rendered document's pages, `404` if it has not been uploaded, and `422` for a malformed ID.
+- Settings for document ingestion: `PAGES_DIR` (default `data/pages`), `MAX_UPLOAD_BYTES` (default 50 MB), `RENDER_DPI` (default 144, at most 600) and `MAX_PAGES` (default 500). Invalid values stop the service at startup. `python-multipart` is a new runtime dependency.
+- Rendered pages are stored in the named volume `pages_data`, mounted at `/data/pages` and owned by the API's non-root user, so they survive container restarts and replacements. The smoke test proves this by replacing the API container and fetching the document again.
 
 ### Changed
 - Python 3.12 is now required (previously 3.11–3.12); local development, CI and the Docker image all use 3.12.
