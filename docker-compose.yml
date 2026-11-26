@@ -31,6 +31,9 @@ services:
     image: docagent-api:dev
     ports:
       - "127.0.0.1:8000:8000"
+    volumes:
+      # Rendered pages survive restarts and image upgrades (see ADR-005).
+      - pages_data:/data/pages
     environment:
       # Documents the wiring: services reach each other by service name.
       QDRANT_URL: http://qdrant:6333
@@ -42,3 +45,4 @@ services:
 
 volumes:
   qdrant_data:
+  pages_data:

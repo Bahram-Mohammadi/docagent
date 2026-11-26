@@ -56,6 +56,11 @@ COPY --from=builder /app/.venv /app/.venv
 # `docagent_api` importable.
 COPY services/api/docagent_api/ docagent_api/
 
+# The only writable location for the app: rendered pages (mounted as a volume
+# in Compose). Code under /app stays root-owned and read-only to the app.
+RUN mkdir -p /data/pages && chown 10001:10001 /data/pages
+ENV PAGES_DIR=/data/pages
+
 # Run as non-root to limit the damage if the application is compromised.
 USER 10001:10001
 
